@@ -3,7 +3,7 @@ output "instances" {
 }
 
 output "dbCluster" {
-  value = aws_rds_cluster_endpoint.cluster_endpoints[*]
+  value = aws_rds_cluster_instance.cluster_instances[*]
 }
 
 output "agents" {
@@ -14,12 +14,25 @@ output "metricsServer" {
   value = aws_instance.metrics_server
 }
 
+output "keycloakServer" {
+  value = aws_instance.keycloak
+}
+
 output "proxy" {
   value = aws_instance.proxy_server
 }
 
 output "elasticServer" {
-  value = aws_elasticsearch_domain.es_server
+  value     = aws_opensearch_domain.es_server
+  sensitive = true
+}
+
+output "elasticRoleARN" {
+  value = aws_iam_role.es_role.arn
+}
+
+output "redisServer" {
+  value = aws_elasticache_cluster.redis_server
 }
 
 output "s3bucket" {
@@ -38,3 +51,4 @@ output "dbSecurityGroup" {
 output "jobServers" {
   value = aws_instance.job_server[*]
 }
+

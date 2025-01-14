@@ -5,6 +5,8 @@ package terraform
 
 import (
 	"fmt"
+	"net"
+	"strconv"
 )
 
 // Info displays information about the current load-test deployment.
@@ -25,7 +27,7 @@ func displayInfo(output *Output) {
 
 	if output.HasAppServers() {
 		if output.HasProxy() {
-			fmt.Println("Mattermost URL: http://" + output.Proxy.PublicDNS)
+			fmt.Println("Mattermost URL: http://" + output.Proxies[0].PublicDNS)
 		} else {
 			fmt.Println("Mattermost URL: http://" + output.Instances[0].PublicDNS + ":8065")
 		}
@@ -51,10 +53,28 @@ func displayInfo(output *Output) {
 		fmt.Println("Coordinator: " + output.Agents[0].PublicIP)
 	}
 
+	if output.HasProxy() {
+		if len(output.Proxies) > 1 {
+			fmt.Println("Proxies:")
+		} else {
+			fmt.Println("Proxy:")
+		}
+		for _, inst := range output.Proxies {
+			fmt.Println("- " + inst.Tags.Name + ": " + inst.PublicIP)
+		}
+	}
+
 	if output.HasMetrics() {
 		fmt.Println("Grafana URL: http://" + output.MetricsServer.PublicIP + ":3000")
 		fmt.Println("Prometheus URL: http://" + output.MetricsServer.PublicIP + ":9090")
 		fmt.Println("Pyroscope URL: http://" + output.MetricsServer.PublicIP + ":4040")
+	}
+	if output.HasKeycloak() {
+		fmt.Println("Keycloak server IP: " + output.KeycloakServer.PublicIP)
+		fmt.Println("Keycloak URL: http://" + output.KeycloakServer.PublicDNS + ":8080/")
+		if len(output.KeycloakDatabaseCluster.Instances) > 0 {
+			fmt.Printf("Keycloak DB Cluster: %v\n", output.KeycloakDatabaseCluster.Instances[0].Endpoint)
+		}
 	}
 	if output.HasDB() {
 		fmt.Println("DB Cluster Identifier: ", output.DBCluster.ClusterIdentifier)
@@ -66,6 +86,10 @@ func displayInfo(output *Output) {
 
 	if output.HasElasticSearch() {
 		fmt.Println("ElasticSearch cluster endpoint: " + output.ElasticSearchServer.Endpoint)
+	}
+
+	if output.HasRedis() {
+		fmt.Println("Redis endpoint: ", net.JoinHostPort(output.RedisServer.Address, strconv.Itoa(output.RedisServer.Port)))
 	}
 	fmt.Println("==================================================")
 }

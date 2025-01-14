@@ -11,7 +11,9 @@ import (
 	"github.com/mattermost/mattermost-load-test-ng/defaults"
 	"github.com/mattermost/mattermost-load-test-ng/deployment"
 	"github.com/mattermost/mattermost-load-test-ng/deployment/terraform"
+	"github.com/mattermost/mattermost-load-test-ng/deployment/terraform/ssh"
 	"github.com/mattermost/mattermost-load-test-ng/logger"
+	"github.com/mattermost/mattermost/server/public/model"
 
 	"github.com/spf13/cobra"
 )
@@ -27,10 +29,18 @@ func RunCreateCmdF(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create terraform engine: %w", err)
 	}
 
-	initData := config.DBDumpURI == ""
-	err = t.Create(initData)
+	extAgent, err := ssh.NewAgent()
 	if err != nil {
+		return fmt.Errorf("failed to create SSH agent: %w", err)
+	}
+
+	initData := config.DBDumpURI == "" && config.ExternalDBSettings.DataSource == ""
+	if err = t.Create(extAgent, initData); err != nil {
 		return fmt.Errorf("failed to create terraform env: %w", err)
+	}
+
+	if err := t.PostProcessDatabase(extAgent); err != nil {
+		return fmt.Errorf("failed to post-process database: %w", err)
 	}
 
 	return nil
@@ -46,6 +56,7 @@ func RunDestroyCmdF(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create terraform engine: %w", err)
 	}
+
 	return t.Destroy()
 }
 
@@ -148,10 +159,15 @@ func RunSSHListCmdF(cmd *cobra.Command, args []string) error {
 		fmt.Printf(" - %s\n", instance.Tags.Name)
 	}
 	if output.HasProxy() {
-		fmt.Printf(" - %s\n", output.Proxy.Tags.Name)
+		for _, inst := range output.Proxies {
+			fmt.Printf(" - %s\n", inst.Tags.Name)
+		}
 	}
 	if output.HasMetrics() {
 		fmt.Printf(" - %s\n", output.MetricsServer.Tags.Name)
+	}
+	if output.HasKeycloak() {
+		fmt.Printf(" - %s\n", output.KeycloakServer.Tags.Name)
 	}
 	return nil
 }
@@ -171,6 +187,15 @@ func getConfig(cmd *cobra.Command) (deployment.Config, error) {
 	return *cfg, nil
 }
 
+func setServiceEnv(cmd *cobra.Command) {
+	serviceEnv, _ := cmd.Flags().GetString("service_environment")
+	// Set it to test if it's neither prod nor test.
+	if serviceEnv != model.ServiceEnvironmentProduction && serviceEnv != model.ServiceEnvironmentTest {
+		serviceEnv = model.ServiceEnvironmentTest
+	}
+	os.Setenv("MM_SERVICEENVIRONMENT", serviceEnv)
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:          "ltctl",
@@ -178,11 +203,12 @@ func main() {
 		Short:        "Manage and control load-test deployments",
 	}
 	rootCmd.PersistentFlags().StringP("config", "c", "", "path to the deployer configuration file to use")
+	rootCmd.PersistentFlags().StringP("service_environment", "s", model.ServiceEnvironmentTest, "value of the MM_SERVICEENVIRONMENT variable. Valid values are production, test")
 
 	deploymentCmd := &cobra.Command{
 		Use:               "deployment",
 		Short:             "Manage a load-test deployment",
-		PersistentPreRun:  func(_ *cobra.Command, _ []string) { os.Setenv("MM_SERVICEENVIRONMENT", "production") },
+		PersistentPreRun:  func(cmd *cobra.Command, _ []string) { setServiceEnv(cmd) },
 		PersistentPostRun: func(_ *cobra.Command, _ []string) { os.Unsetenv("MM_SERVICEENVIRONMENT") },
 	}
 
@@ -230,7 +256,7 @@ func main() {
 	loadtestCmd := &cobra.Command{
 		Use:               "loadtest",
 		Short:             "Manage the load-test",
-		PersistentPreRun:  func(_ *cobra.Command, _ []string) { os.Setenv("MM_SERVICEENVIRONMENT", "production") },
+		PersistentPreRun:  func(cmd *cobra.Command, _ []string) { setServiceEnv(cmd) },
 		PersistentPostRun: func(_ *cobra.Command, _ []string) { os.Unsetenv("MM_SERVICEENVIRONMENT") },
 	}
 
@@ -381,7 +407,7 @@ func main() {
 	comparisonCmd := &cobra.Command{
 		Use:               "comparison",
 		Short:             "Manage fully automated load-test comparisons environments",
-		PersistentPreRun:  func(_ *cobra.Command, _ []string) { os.Setenv("MM_SERVICEENVIRONMENT", "production") },
+		PersistentPreRun:  func(cmd *cobra.Command, _ []string) { setServiceEnv(cmd) },
 		PersistentPostRun: func(_ *cobra.Command, _ []string) { os.Unsetenv("MM_SERVICEENVIRONMENT") },
 	}
 	comparisonCmd.Flags().StringP("comparison-config", "", "", "path to the comparison config file to use")

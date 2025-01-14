@@ -1,36 +1,65 @@
 {
   "AWSProfile": "mm-loadtest",
   "AWSRegion": "us-east-1",
+  "AWSAvailabilityZone": "us-east-1c",
   "AWSAMI": "ami-003d3d03cfe1b0468",
   "ClusterName": "loadtest",
   "ClusterVpcID": "",
-  "ClusterSubnetID": "",
+  "ClusterSubnetIDs": {
+    "Agent": [],
+    "App": [],
+    "Database": [],
+    "ElasticSearch": [],
+    "Job": [],
+    "Keycloak": [],
+    "Metrics": [],
+    "Proxy": [],
+    "Redis": []
+  },
   "AppInstanceCount": 1,
-  "AppInstanceType": "c5.xlarge",
+  "AppInstanceType": "c7i.xlarge",
+  "AppAttachIAMProfile": "",
+  "MetricsInstanceType": "t3.xlarge",
   "AgentInstanceCount": 2,
-  "AgentInstanceType": "c5.xlarge",
+  "AgentInstanceType": "c7i.xlarge",
+  "AgentAllocatePublicIPAddress": true,
   "ElasticSearchSettings": {
     "InstanceCount": 0,
-    "InstanceType": "r5.large.elasticsearch",
-    "VpcID": "",
-    "Version": 6.5,
-    "CreateRole": false
+    "InstanceType": "r6g.large.search",
+    "Version": "Elasticsearch_7.10",
+    "CreateRole": false,
+    "SnapshotRepository": "",
+    "SnapshotName": "",
+    "RestoreTimeoutMinutes": 45,
+    "ClusterTimeoutMinutes": 45,
+    "ZoneAwarenessEnabled": false,
+    "ZoneAwarenessAZCount": 2,
+    "EnableCloudwatchLogs": true
+  },
+  "RedisSettings": {
+    "Enabled": false,
+    "NodeType": "cache.m7g.2xlarge",
+    "ParameterGroupName": "default.redis7",
+    "EngineVersion": "7.1"
   },
   "JobServerSettings":{
     "InstanceCount": 0,
-    "InstanceType": "c5.xlarge"
+    "InstanceType": "c7i.xlarge"
   },
   "EnableAgentFullLogs": true,
-  "ProxyInstanceType": "c5.xlarge",
+  "ProxyInstanceCount": 1,
+  "ProxyInstanceType": "c7i.xlarge",
+  "ProxyAllocatePublicIPAddress": true,
   "SSHPublicKey": "~/.ssh/id_rsa.pub",
   "TerraformStateDir" : "/var/lib/mattermost-load-test-ng",
   "S3BucketDumpURI" : "",
   "DBDumpURI": "",
   "SiteURL": "",
+  "EnableNetPeekMetrics": false,
   "TerraformDBSettings": {
     "InstanceCount": 1,
     "InstanceEngine": "aurora-postgresql",
-    "InstanceType": "db.r6g.large",
+    "InstanceType": "db.r7g.large",
     "UserName": "mmuser",
     "Password": "mostest80098bigpass_",
     "EnablePerformanceInsights": true,
@@ -41,7 +70,8 @@
     "DriverName": "cockroach",
     "DataSource": "",
     "DataSourceReplicas": [],
-    "DataSourceSearchReplicas": []
+    "DataSourceSearchReplicas": [],
+    "ClusterIdentifier": "",
   },
   "ExternalBucketSettings": {
     "AmazonS3AccessKeyId": "",
@@ -54,13 +84,21 @@
     "AmazonS3SignV2": false,
     "AmazonS3SSE": false
   },
+  "ExternalAuthProviderSettings": {
+    "Enabled": false,
+    "KeycloakAdminUser": "mmadmin",
+    "KeycloakAdminPassword": "mmpass",
+    "KeycloakRealmFilePath": "",
+    "KeycloakDBDumpURI": "",
+    "GenerateUsersCount": 0
+  },
   "MattermostDownloadURL": "https://latest.mattermost.com/mattermost-enterprise-linux",
   "MattermostLicenseFile": "",
   "MattermostConfigPatchFile": "",
   "AdminEmail": "sysadmin@sample.mattermost.com",
   "AdminUsername": "sysadmin",
   "AdminPassword": "Sys@dmin-sample1",
-  "LoadTestDownloadURL": "https://github.com/mattermost/mattermost-load-test-ng/releases/download/v1.9.1/mattermost-load-test-ng-v1.9.1-linux-amd64.tar.gz",
+  "LoadTestDownloadURL": "https://github.com/mattermost/mattermost-load-test-ng/releases/download/v1.24.0/mattermost-load-test-ng-v1.24.0-linux-amd64.tar.gz",
   "LogSettings": {
     "EnableConsole": true,
     "ConsoleLevel": "INFO",
@@ -118,10 +156,13 @@
     "App": 10,
     "Metrics": 50,
     "Job": 50,
-    "ElasticSearch": 20
+    "ElasticSearch": 100
   },
   "PyroscopeSettings": {
     "EnableAppProfiling": true,
-    "EnableAgentProfiling": true
+    "EnableAgentProfiling": true,
+    "BlockProfileRate": 0
+  },
+  "CustomTags": {
   }
 }

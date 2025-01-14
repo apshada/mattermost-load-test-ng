@@ -109,6 +109,11 @@ func (c *Config) IsValid() error {
 			return err
 		}
 	}
+
+	if c.BaseBuild.Label == c.NewBuild.Label {
+		return fmt.Errorf("the labels for the base and new build must be unique")
+	}
+
 	return nil
 }
 
@@ -117,7 +122,7 @@ func (c *Config) IsValid() error {
 func ReadConfig(configFilePath string) (*Config, error) {
 	var cfg Config
 
-	if err := defaults.ReadFromJSON(configFilePath, "./config/comparison.json", &cfg); err != nil {
+	if err := defaults.ReadFrom(configFilePath, "./config/comparison.json", &cfg); err != nil {
 		return nil, err
 	}
 

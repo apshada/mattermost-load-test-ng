@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/mattermost/mattermost-load-test-ng/loadtest/store"
@@ -33,12 +34,22 @@ type UserEntity struct {
 	wsServerSeq int64
 }
 
+const (
+	AuthenticationTypeMattermost = "mattermost"
+	AuthenticationTypeOpenID     = "openid"
+	AuthenticationTypeSAML       = "saml"
+)
+
+var stripIDsRE = regexp.MustCompile(`\b\w{26}\b`)
+
 // Config holds necessary information required by a UserEntity.
 type Config struct {
 	// The URL of the Mattermost web server.
 	ServerURL string
 	// The URL of the mattermost WebSocket server.
 	WebSocketURL string
+	// The type of authentication to be used by the entity.
+	AuthenticationType string
 	// The username to be used by the entity.
 	Username string
 	// The email to be used by the entity.
@@ -77,6 +88,13 @@ type teamPresenceMsg struct {
 	teamId string
 }
 
+type postedAckMsg struct {
+	postId     string
+	status     string
+	reason     string
+	postedData string
+}
+
 type ueTransport struct {
 	transport http.RoundTripper
 	ue        *UserEntity
@@ -89,10 +107,10 @@ func (t *ueTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.transport.RoundTrip(req)
 	t.ue.observeHTTPRequestTimes(time.Since(startTime).Seconds())
 	if os.IsTimeout(err) {
-		t.ue.incHTTPTimeouts(req.URL.Path, req.Method)
+		t.ue.incHTTPTimeouts(stripIDs(req.URL.Path), req.Method)
 	}
 	if resp != nil && resp.StatusCode >= 400 {
-		t.ue.incHTTPErrors(req.URL.Path, req.Method, resp.StatusCode)
+		t.ue.incHTTPErrors(stripIDs(req.URL.Path), req.Method, resp.StatusCode)
 	}
 	return resp, err
 }
@@ -133,6 +151,15 @@ func New(setup Setup, config Config) *UserEntity {
 	if err != nil {
 		return nil
 	}
+	ue.store.SetPerformanceReport(&model.PerformanceReport{
+		Version: "0.1.0",
+		Labels: map[string]string{
+			"platform": "other",
+			"agent":    "other",
+		},
+		ClientID: model.NewId(),
+		Start:    float64(time.Now().UnixMilli()) / 1000,
+	})
 
 	return &ue
 }
@@ -153,7 +180,7 @@ func (ue *UserEntity) Connect() (<-chan error, error) {
 	}
 
 	ue.wsEventChan = make(chan *model.WebSocketEvent)
-	ue.dataChan = make(chan any)
+	ue.dataChan = make(chan any, 10)
 	go ue.listen(ue.wsErrorChan)
 	ue.connected = true
 	return ue.wsErrorChan, nil
@@ -229,4 +256,8 @@ func (ue *UserEntity) getUserFromStore() (*model.User, error) {
 		return nil, errors.New("user was not initialized")
 	}
 	return user, nil
+}
+
+func stripIDs(path string) string {
+	return stripIDsRE.ReplaceAllString(path, "$$ID")
 }

@@ -46,6 +46,7 @@ type User interface {
 	UpdateActiveChannel(channelId string) error
 	UpdateActiveThread(channelId string) error
 	UpdateActiveTeam(teamId string) error
+	PostedAck(postId string, status string, reason string, postedData string) error
 
 	//server
 	// GetConfig fetches and stores the server's configuration.
@@ -115,6 +116,14 @@ type User interface {
 	// in a specified team.
 	// It returns the users in the system based on the given username.
 	AutocompleteUsersInTeam(teamId, username string, limit int) (map[string]bool, error)
+
+	// drafts
+	// GetDrafts fetches and stores drafts for the given user in a specified team.
+	GetDrafts(teamId string) error
+	// UpsertDraft creates and stores a new draft made by the user.
+	UpsertDraft(teamId string, draft *model.Draft) error
+	// DeleteDraft deletes the draft for the given user in a specified channel.
+	DeleteDraft(channelId, rootId string) error
 
 	// posts
 	// CreatePost creates and stores a new post made by the user.
@@ -316,4 +325,23 @@ type User interface {
 	// GraphQL
 	GetInitialDataGQL() error
 	GetChannelsAndChannelMembersGQL(teamID string, includeDeleted bool, channelsCursor, channelMembersCursor string) (string, string, error)
+
+	// Client Metrics
+	ObserveClientMetric(t model.MetricType, v float64) error
+	SubmitPerformanceReport() error
+
+	// GetChannelBookmarks fetches bookmarks for the given channel since a specific timestamp.
+	GetChannelBookmarks(channelId string, since int64) error
+
+	// AddChannelBookmark creates a bookmark
+	AddChannelBookmark(bookmark *model.ChannelBookmark) error
+
+	// UpdateChannelBookmark updates a given bookmark.
+	UpdateChannelBookmark(bookmark *model.ChannelBookmarkWithFileInfo) error
+
+	// DeleteChannelBookmark deletes a given bookmarkId from a given channelId.
+	DeleteChannelBookmark(channelId, bookmarkId string) error
+
+	// UpdateChannelBookmarkSortOrder sets the new position of a bookmark for the given channel
+	UpdateChannelBookmarkSortOrder(channelId, bookmarkId string, sortOrder int64) error
 }

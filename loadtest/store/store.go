@@ -116,6 +116,8 @@ type UserStore interface {
 	RandomThread() (model.ThreadResponse, error)
 	// RandomCategory returns a random category from a team
 	RandomCategory(teamID string) (model.SidebarCategoryWithChannels, error)
+	// RandomDraftForTeam returns a random draft id for a team for the current user
+	RandomDraftForTeam(teamId string) (string, error)
 
 	// profile
 	// ProfileImageLastUpdated returns the etag returned by the server when first
@@ -144,6 +146,25 @@ type UserStore interface {
 
 	// PostsWithAckRequests returns IDs of the posts that asked for acknowledgment.
 	PostsWithAckRequests() ([]string, error)
+
+	// PerformanceReport returns a copy of underlying performance report
+	PerformanceReport() (*model.PerformanceReport, error)
+
+	// Channel Bookmarks
+	// ChannelBookmarks returns all bookmarks for the specified channel.
+	ChannelBookmarks(channelId string) []*model.ChannelBookmarkWithFileInfo
+
+	// SetChannelBookmarks stores the given bookmarks.
+	SetChannelBookmarks(bookmarks []*model.ChannelBookmarkWithFileInfo) error
+
+	// AddChannelBookmark stores the bookmark.
+	AddChannelBookmark(bookmark *model.ChannelBookmarkWithFileInfo) error
+
+	// UpdateChannelBookmark updates a given bookmark.
+	UpdateChannelBookmark(bookmark *model.ChannelBookmarkWithFileInfo) error
+
+	// DeleteChannelBookmark deletes a given bookmarkId.
+	DeleteChannelBookmark(bookmarkId string) error
 }
 
 // MutableUserStore is a super-set of UserStore which, apart from providing
@@ -172,6 +193,12 @@ type MutableUserStore interface {
 	// statuses
 	// SetStatus stores the status for the given userId.
 	SetStatus(userId string, status *model.Status) error
+
+	// drafts
+	// SetDraft stores the draft for the given teamId, and channelId or rootId.
+	SetDraft(teamId, id string, draft *model.Draft) error
+	// SetDrafts stores the given drafts.
+	SetDrafts(teamId string, drafts []*model.Draft) error
 
 	// posts
 	// SetPost stores the given post.
@@ -252,4 +279,7 @@ type MutableUserStore interface {
 
 	// SidebarCategories
 	SetCategories(teamID string, sidebarCategories *model.OrderedSidebarCategories) error
+
+	// ClientPerformance
+	SetPerformanceReport(report *model.PerformanceReport)
 }

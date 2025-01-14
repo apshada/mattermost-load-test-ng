@@ -4,14 +4,17 @@
 package deployment
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"strings"
 
 	"github.com/mattermost/mattermost-load-test-ng/defaults"
 	"github.com/mattermost/mattermost-load-test-ng/loadtest/report"
 	"github.com/mattermost/mattermost-load-test-ng/logger"
+	"github.com/mattermost/mattermost/server/public/shared/mlog"
 )
 
 var esDomainNameRe = regexp.MustCompile(`^[a-z][a-z0-9\-]{2,27}$`)
@@ -19,30 +22,43 @@ var esDomainNameRe = regexp.MustCompile(`^[a-z][a-z0-9\-]{2,27}$`)
 // Config contains the necessary data
 // to deploy and provision a load test environment.
 type Config struct {
-	// AWSProfile is the name of the AWS profile to use for all AWS commands
-	AWSProfile string `default:"mm-loadtest"`
+	// AWSProfile is the optional name of the AWS profile to use for all AWS commands
+	AWSProfile string `default:""`
 	// AWSRegion is the region used to deploy all resources.
 	AWSRegion string `default:"us-east-1"`
+	// AWSAvailabilityZone defines the Availability Zone
+	// in which instances should be deployed.
+	AWSAvailabilityZone string `default:"us-east-1c"`
 	// AWSAMI is the AMI to use for all EC2 instances.
 	AWSAMI string `default:"ami-0fa37863afb290840"`
 	// ClusterName is the name of the cluster.
 	ClusterName string `default:"loadtest" validate:"alpha"`
 	// ClusterVpcID is the id of the VPC associated to the resources.
 	ClusterVpcID string
-	// ClusterSubnetID is the id of the subnet associated to the resources.
-	ClusterSubnetID string
+	// ClusterSubnetIDs is the ids of the subnets associated to each resource type.
+	ClusterSubnetIDs ClusterSubnetIDs
 	// Number of application instances.
 	AppInstanceCount int `default:"1" validate:"range:[0,)"`
 	// Type of the EC2 instance for app.
-	AppInstanceType string `default:"c5.xlarge" validate:"notempty"`
+	AppInstanceType string `default:"c7i.xlarge" validate:"notempty"`
+	// IAM role to attach to the app servers
+	AppAttachIAMProfile string `default:""`
+	// Type of the EC2 instance for metrics.
+	MetricsInstanceType string `default:"t3.xlarge" validate:"notempty"`
 	// Number of agents, first agent and coordinator will share the same instance.
 	AgentInstanceCount int `default:"2" validate:"range:[0,)"`
 	// Type of the EC2 instance for agent.
-	AgentInstanceType string `default:"c5.xlarge" validate:"notempty"`
+	AgentInstanceType string `default:"c7i.xlarge" validate:"notempty"`
 	// Logs the command output (stdout & stderr) to home directory.
 	EnableAgentFullLogs bool `default:"true"`
+	// Should a pubic IP be allocated for the agent instance.
+	AgentAllocatePublicIPAddress bool `default:"true"`
+	// Number of proxy instances.
+	ProxyInstanceCount int `default:"1" validate:"range:[0,5]"`
 	// Type of the EC2 instance for proxy.
 	ProxyInstanceType string `default:"m4.xlarge" validate:"notempty"`
+	// Should a pubic IP be allocated for the proxy instance.
+	ProxyAllocatePublicIPAddress bool `default:"true"`
 	// Path to the SSH public key.
 	SSHPublicKey string `default:"~/.ssh/id_rsa.pub" validate:"notempty"`
 	// Terraform database connection and provision settings.
@@ -51,14 +67,16 @@ type Config struct {
 	ExternalDBSettings ExternalDBSettings
 	// External bucket connection settings.
 	ExternalBucketSettings ExternalBucketSettings
-	// URL from where to download Mattermost release.
-	// This can also point to a local binary path if the user wants to run loadtest
-	// on a custom build. The path should be prefixed with "file://". In that case,
-	// only the binary gets replaced, and the rest of the build comes from the latest
-	// stable release.
+	// ExternalAuthProviderSettings contains the settings for configuring an external auth provider.
+	ExternalAuthProviderSettings ExternalAuthProviderSettings
+	// MattermostDownloadURL supports the following use cases:
+	// 1. If it is a URL, it should be the Mattermost release to use.
+	// 2. If it is a file:// uri pointing to a binary, use the latest Mattermost release and replace
+	//    its binary with the binary pointed to by the file:// uri.
+	// 3. If it is a file:// pointing to a tar.gz, use that as the Mattermost release.
 	MattermostDownloadURL string `default:"https://latest.mattermost.com/mattermost-enterprise-linux" validate:"url"`
 	// Path to the Mattermost EE license file.
-	MattermostLicenseFile string `default:"" validate:"file"`
+	MattermostLicenseFile string `default:"" validate:"empty|file"`
 	// Optional path to a partial Mattermost config file to be applied as patch during
 	// app server deployment.
 	MattermostConfigPatchFile string `default:""`
@@ -71,14 +89,15 @@ type Config struct {
 	// URL from where to download load-test-ng binaries and configuration files.
 	// The configuration files provided in the package will be overridden in
 	// the deployment process.
-	LoadTestDownloadURL   string `default:"https://github.com/mattermost/mattermost-load-test-ng/releases/download/v1.9.1/mattermost-load-test-ng-v1.9.1-linux-amd64.tar.gz" validate:"url"`
+	LoadTestDownloadURL   string `default:"https://github.com/mattermost/mattermost-load-test-ng/releases/download/v1.24.0/mattermost-load-test-ng-v1.24.0-linux-amd64.tar.gz" validate:"url"`
 	ElasticSearchSettings ElasticSearchSettings
+	RedisSettings         RedisSettings
 	JobServerSettings     JobServerSettings
 	LogSettings           logger.Settings
 	Report                report.Config
 	// Directory under which the .terraform directory and state files are managed.
 	// It will be created if it does not exist
-	TerraformStateDir string `default:"/var/lib/mattermost-load-test-ng" validate:"notempty"`
+	TerraformStateDir string `default:"./ltstate" validate:"notempty"`
 	// URI of an S3 bucket whose contents are copied to the bucket created in the deployment
 	S3BucketDumpURI string `default:"" validate:"s3uri"`
 	// An optional URI to a MM server database dump file
@@ -87,10 +106,19 @@ type Config struct {
 	// This can also point to a local file if prefixed with "file://".
 	// In such case, the dump file will be uploaded to the app servers.
 	DBDumpURI string `default:""`
+	// DBExtraSQL are optional URIs to SQL files containing SQL statements to be applied
+	// to the Mattermost database.
+	// The file is expected to be gzip compressed.
+	// This can also point to a local file if prefixed with "file://".
+	DBExtraSQL []string `default:"[]"`
 	// An optional host name that will:
 	//   - Override the SiteUrl
 	//   - Point to the proxy IP via a new entry in the server's /etc/hosts file
 	SiteURL string `default:"ltserver"`
+	// ServerURL is the URL of the Mattermost server URL that the agent client will use to connect to the
+	// Mattermost servers. This is used to override the server URL in the agent's config in case there's a
+	// proxy in front of the Mattermost server.
+	ServerURL string `default:""`
 	// UsersFilePath specifies the path to an optional file containing a list of credentials for the controllers
 	// to use. If present, it is used to automatically upload it to the agents and override the agent's config's
 	// own UsersFilePath.
@@ -99,6 +127,67 @@ type Config struct {
 	PyroscopeSettings PyroscopeSettings
 	// StorageSizes specifies the sizes of the disks for each instance type
 	StorageSizes StorageSizes
+	// EnableNetPeekMetrics enables fine grained networking metrics collection through netpeek utility.
+	EnableNetPeekMetrics bool `default:"false"`
+	// CustomTags is an optional list of key-value pairs, which will be used as default
+	// tags for all resources deployed
+	CustomTags TerraformMap
+}
+
+// TerraformMap is a map of string -> string that serializes to the format expected by
+// the Terraform AWS provider when formatted as a string
+type TerraformMap map[string]string
+
+func (t TerraformMap) String() string {
+	var pairs []string
+	for key, value := range t {
+		pairs = append(pairs, fmt.Sprintf("%s = %q", key, value))
+	}
+	return "{" + strings.Join(pairs, ", ") + "}"
+}
+
+// ClusterSubnetIDs contains the subnet ids for the different types of instances.
+type ClusterSubnetIDs struct {
+	App           []string `default_size:"0" json:"app"`
+	Job           []string `default_size:"0" json:"job"`
+	Proxy         []string `default_size:"0" json:"proxy"`
+	Agent         []string `default_size:"0" json:"agent"`
+	ElasticSearch []string `default_size:"0" json:"elasticsearch"`
+	Metrics       []string `default_size:"0" json:"metrics"`
+	Keycloak      []string `default_size:"0" json:"keycloak"`
+	Database      []string `default_size:"0" json:"database"`
+	Redis         []string `default_size:"0" json:"redis"`
+}
+
+// IsAnySet returns true if any of the subnet ids are set.
+func (c *ClusterSubnetIDs) IsAnySet() bool {
+	value := reflect.ValueOf(*c)
+
+	for i := 0; i < value.NumField(); i++ {
+		field := value.Field(i)
+		// Skip fields that are not slices
+		if field.Kind() != reflect.Slice {
+			continue
+		}
+
+		if field.IsNil() || value.Field(i).Len() == 0 {
+			continue
+		}
+
+		return true
+	}
+
+	return false
+
+}
+
+func (c ClusterSubnetIDs) String() string {
+	b, err := json.Marshal(c)
+	if err != nil {
+		mlog.Error("Failed to marshal ClusterSubnetIDs", mlog.Err(err))
+		return "{}"
+	}
+	return string(b)
 }
 
 type StorageSizes struct {
@@ -113,7 +202,9 @@ type StorageSizes struct {
 	// Size, in GiB, for the storage of the job server instances
 	Job int `default:"50"`
 	// Size, in GiB, for the storage of the elasticsearch instances
-	ElasticSearch int `default:"20"`
+	ElasticSearch int `default:"100"`
+	// Size, in GiB, for the storage of the keycloak instances
+	KeyCloak int `default:"10"`
 }
 
 // PyroscopeSettings contains flags to enable/disable the profiling
@@ -123,6 +214,9 @@ type PyroscopeSettings struct {
 	EnableAppProfiling bool `default:"true"`
 	// Enable profiling of all the agent instances
 	EnableAgentProfiling bool `default:"true"`
+	// Set the pprof block profile rate.
+	// This value applies to both agent and Mattermost server processes.
+	BlockProfileRate int `default:"0"`
 }
 
 // TerraformDBSettings contains the necessary data
@@ -132,7 +226,7 @@ type TerraformDBSettings struct {
 	// Number of DB instances.
 	InstanceCount int `default:"1" validate:"range:[0,)"`
 	// Type of the DB instance.
-	InstanceType string `default:"db.r6g.large" validate:"notempty"`
+	InstanceType string `default:"db.r7g.large" validate:"notempty"`
 	// Type of the DB instance - postgres or mysql.
 	InstanceEngine string `default:"aurora-postgresql" validate:"oneof:{aurora-mysql, aurora-postgresql}"`
 	// Username to connect to the DB.
@@ -156,13 +250,15 @@ type TerraformDBSettings struct {
 // and provisioned.
 type ExternalDBSettings struct {
 	// Mattermost database driver
-	DriverName string `default:"" validate:"oneof:{mysql, postgres, cockroach}"`
+	DriverName string `default:"postgres" validate:"oneof:{mysql, postgres, cockroach}"`
 	// DSN to connect to the database
 	DataSource string `default:""`
 	// DSN to connect to the database replicas
 	DataSourceReplicas []string `default:""`
 	// DSN to connect to the database search replicas
 	DataSourceSearchReplicas []string `default:""`
+	// ClusterIdentifier of the existing DB cluster.
+	ClusterIdentifier string `default:""`
 }
 
 // ExternalBucketSettings contains the necessary data
@@ -179,6 +275,47 @@ type ExternalBucketSettings struct {
 	AmazonS3SSE             bool   `default:"false"`
 }
 
+// ExternalAuthProviderSettings contains the necessary data
+// to configure an external auth provider.
+type ExternalAuthProviderSettings struct {
+	// Enabled is set to true if the external auth provider should be enabled.
+	Enabled bool `default:"false"`
+	// DevelopmentMode is set to true if the keycloak instance should be started in development mode.
+	DevelopmentMode bool `default:"true"`
+	// KeycloakVersion is the version of keycloak to deploy.
+	KeycloakVersion string `default:"24.0.2"`
+	// KeycloakInstanceType is the type of the EC2 instance for keycloak.
+	InstanceType string `default:"c7i.xlarge"`
+	// KeycloakAdminUser is the username of the keycloak admin interface (admin on the master realm)
+	KeycloakAdminUser string `default:"mmuser" validate:"notempty"`
+	// KeycloakAdminPassword is the password of the keycloak admin interface (admin on the master realm)
+	KeycloakAdminPassword string `default:"mmpass" validate:"alpha"`
+	// KeycloakRealmFilePath is the path to the realm file to be uploaded to the keycloak instance.
+	// If empty, a default realm file will be used.
+	KeycloakRealmFilePath string `default:""`
+	// KeycloakDBDumpURI
+	// An optional URI to a keycloak database dump file to be uploaded on environment
+	// creation.
+	// The file is expected to be gzip compressed.
+	// This can also point to a local file if prefixed with "file://".
+	KeycloakDBDumpURI string `default:""`
+	// GenerateUsersCount is the number of users to generate in the keycloak instance.
+	GenerateUsersCount int `default:"0" validate:"range:[0,)"`
+	// KeycloakRealmName is the name of the realm to be used in Mattermost. Must exist in the keycloak instance.
+	// It is used when creating users and to properly set the OpenID configuration in Mattermost.
+	KeycloakRealmName string `default:"mattermost"`
+	// KeycloakClientID is the client id to be used in Mattermost from the above realm.
+	// Must exist in the keycloak instance
+	KeycloakClientID string `default:"mattermost-openid"`
+	// KeycloakClientSecret is the client secret from the above realm to be used in Mattermost.
+	// Must exist in the keycloak instance
+	KeycloakClientSecret string `default:"qbdUj4dacwfa5sIARIiXZxbsBFoopTyf"`
+	// KeycloakSAMLClientID is the client id to be used in Mattermost from the SAML client.
+	KeycloakSAMLClientID string `default:"mattermost-saml"`
+	// KeycloakSAMLClientSecret is the SAML client secret from the above realm to be used in Mattermost.
+	KeycloakSAMLClientSecret string `default:"9c2edd74-9e20-454d-8cc2-0714e43f5f7e"`
+}
+
 // ElasticSearchSettings contains the necessary data
 // to configure an ElasticSearch instance to be deployed
 // and provisioned.
@@ -188,11 +325,34 @@ type ElasticSearchSettings struct {
 	// Elasticsearch instance type to be created.
 	InstanceType string
 	// Elasticsearch version to be deployed.
-	Version float64
-	// Id of the VPC associated with the instance to be created.
-	VpcID string
+	Version string `default:"Elasticsearch_7.10"`
 	// Set to true if the AWSServiceRoleForAmazonElasticsearchService role should be created.
 	CreateRole bool
+	// SnapshotRepository is the name of the S3 bucket where the snapshot to restore lives.
+	SnapshotRepository string
+	// SnapshotName is the name of the snapshot to restore.
+	SnapshotName string
+	// RestoreTimeoutMinutes is the maximum time, in minutes, that the system will wait for the snapshot to be restored.
+	RestoreTimeoutMinutes int `default:"45" validate:"range:[0,)"`
+	// ClusterTimeoutMinutes is the maximum time, in minutes, that the system will wait for the cluster status to get green.
+	ClusterTimeoutMinutes int `default:"45" validate:"range:[0,)"`
+	// ZoneAwarenessEnabled indicates whether to enable zone awareness or not.
+	ZoneAwarenessEnabled bool `default:"false"`
+	// ZoneAwarenessAZCount indicates the number of availability zones to use for zone awareness.
+	ZoneAwarenessAZCount int `default:"2" validate:"range:[1,3]"`
+	// EnableCloudwatchLogs indicates whether to enable Cloudwatch logs or not.
+	EnableCloudwatchLogs bool `default:"true"`
+}
+
+type RedisSettings struct {
+	// Enabled indicates whether to add Redis or not.
+	Enabled bool
+	// NodeType indicates the instance type.
+	NodeType string `default:"cache.m7g.2xlarge"`
+	// ParameterGroupName indicates the parameter group to attach.
+	ParameterGroupName string `default:"default.redis7"`
+	// EngineVersion indicates the engine version.
+	EngineVersion string `default:"7.1"`
 }
 
 // JobServerSettings contains the necessary data to deploy a job
@@ -201,7 +361,7 @@ type JobServerSettings struct {
 	// Job server instances count.
 	InstanceCount int `default:"0" validate:"range:[0,1]"`
 	// Job server instance type to be created.
-	InstanceType string `default:"c5.xlarge"`
+	InstanceType string `default:"c7i.xlarge"`
 }
 
 // DBParameter contains info regarding a single RDS DB specific parameter.
@@ -232,6 +392,10 @@ func (p DBParameters) String() string {
 
 // IsValid reports whether a given deployment config is valid or not.
 func (c *Config) IsValid() error {
+	if c.ClusterSubnetIDs.IsAnySet() && c.ClusterVpcID == "" {
+		return errors.New("vpc_id is required when any subnet is specified")
+	}
+
 	if !checkPrefix(c.MattermostDownloadURL) {
 		return fmt.Errorf("mattermost download url is not in correct format: %q", c.MattermostDownloadURL)
 	}
@@ -240,7 +404,15 @@ func (c *Config) IsValid() error {
 		return fmt.Errorf("load-test download url is not in correct format: %q", c.LoadTestDownloadURL)
 	}
 
+	if c.ExternalDBSettings.DataSource != "" && c.DBDumpURI != "" {
+		return fmt.Errorf("both ExternalDBSettings.DataSource and DBDumpURI are set, only one can be set")
+	}
+
 	if err := c.validateElasticSearchConfig(); err != nil {
+		return err
+	}
+
+	if err := c.validateProxyConfig(); err != nil {
 		return err
 	}
 
@@ -248,6 +420,16 @@ func (c *Config) IsValid() error {
 		return err
 	}
 
+	return nil
+}
+
+func (c *Config) validateProxyConfig() error {
+	if c.AppInstanceCount > 1 && c.ProxyInstanceCount < 1 && c.ServerURL == "" {
+		return fmt.Errorf("the deployment will create more than one app node, but no proxy is being deployed and no external proxy has been configured: either set ProxyInstanceCount to 1, or set ServerURL to the URL of an external proxy")
+	}
+	if c.ProxyInstanceCount > 1 && c.SiteURL == "" {
+		return fmt.Errorf("in a multi-proxy setup, the siteURL must be defined: either set the siteURL or set ProxyInstanceCount to 1")
+	}
 	return nil
 }
 
@@ -266,13 +448,13 @@ func checkPrefix(str string) bool {
 }
 
 func (c *Config) validateElasticSearchConfig() error {
-	if (c.ElasticSearchSettings != ElasticSearchSettings{}) {
-		if c.ElasticSearchSettings.InstanceCount > 1 {
-			return errors.New("it is not possible to create more than 1 instance of Elasticsearch")
-		}
+	if c.ElasticSearchSettings.InstanceCount == 0 {
+		return nil
+	}
 
-		if c.ElasticSearchSettings.InstanceCount > 0 && c.ElasticSearchSettings.VpcID == "" {
-			return errors.New("VpcID must be set in order to create an Elasticsearch instance")
+	if (c.ElasticSearchSettings != ElasticSearchSettings{}) {
+		if c.ClusterVpcID == "" {
+			return errors.New("ClusterVpcID must be set in order to create an Elasticsearch instance")
 		}
 
 		domainName := c.ClusterName + "-es"
@@ -282,6 +464,10 @@ func (c *Config) validateElasticSearchConfig() error {
 				"(hyphen). Current value is \"" + domainName + "\"")
 		}
 
+	}
+
+	if !strings.HasPrefix(c.ElasticSearchSettings.Version, "OpenSearch") {
+		return fmt.Errorf("Incorrect engine version: %s. Must start with %q", c.ElasticSearchSettings.Version, "OpenSearch")
 	}
 
 	return nil
@@ -304,7 +490,7 @@ func (c *Config) validateDBName() error {
 func ReadConfig(configFilePath string) (*Config, error) {
 	var cfg Config
 
-	if err := defaults.ReadFromJSON(configFilePath, "./config/deployer.json", &cfg); err != nil {
+	if err := defaults.ReadFrom(configFilePath, "./config/deployer.json", &cfg); err != nil {
 		return nil, err
 	}
 

@@ -11,6 +11,7 @@ import (
 	"github.com/mattermost/mattermost-load-test-ng/defaults"
 	"github.com/mattermost/mattermost-load-test-ng/deployment"
 	"github.com/mattermost/mattermost-load-test-ng/deployment/terraform"
+	"github.com/mattermost/mattermost-load-test-ng/deployment/terraform/ssh"
 
 	"github.com/mattermost/mattermost/server/public/shared/mlog"
 )
@@ -26,7 +27,6 @@ type Comparison struct {
 	config         *Config
 	deploymentInfo DeploymentInfo
 	deployments    map[string]*deploymentConfig
-	cancelCh       chan struct{}
 }
 
 // New creates and initializes a new Comparison object to be used to run
@@ -40,7 +40,6 @@ func New(cfg *Config, deployerCfg *deployment.Config) (*Comparison, error) {
 		config:         cfg,
 		deploymentInfo: getDeploymentInfo(deployerCfg),
 		deployments:    map[string]*deploymentConfig{},
-		cancelCh:       make(chan struct{}),
 	}
 
 	var i int
@@ -69,12 +68,18 @@ func New(cfg *Config, deployerCfg *deployment.Config) (*Comparison, error) {
 // It returns a list of results or an error in case of failure.
 func (c *Comparison) Run() (Output, error) {
 	var output Output
+
+	extAgent, err := ssh.NewAgent()
+	if err != nil {
+		return output, fmt.Errorf("failed to create ssh agent: %w", err)
+	}
+
 	// create deployments
-	err := c.deploymentAction(func(t *terraform.Terraform, dpConfig *deploymentConfig) error {
-		if err := t.Create(false); err != nil {
+	err = c.deploymentAction(func(t *terraform.Terraform, dpConfig *deploymentConfig) error {
+		if err := t.Create(extAgent, false); err != nil {
 			return err
 		}
-		return provisionFiles(t, dpConfig, c.config.BaseBuild.URL, c.config.NewBuild.URL)
+		return provisionFiles(t, dpConfig, c.config.BaseBuild, c.config.NewBuild)
 	})
 	if err != nil {
 		return output, err
@@ -102,19 +107,25 @@ func (c *Comparison) Run() (Output, error) {
 				for i, buildCfg := range []BuildConfig{c.config.BaseBuild, c.config.NewBuild} {
 					mlog.Debug("initializing load-test")
 					// initialize instance state
-					if err := initLoadTest(t, buildCfg, dumpFilename, s3BucketURI, c.cancelCh); err != nil {
+					if err := initLoadTest(t, buildCfg, dumpFilename, s3BucketURI); err != nil {
+						res.LoadTests[i] = LoadTestResult{Failed: true}
 						errsCh <- err
-						return
+						break
 					}
 					mlog.Debug("load-test init done")
 
-					status, err := runLoadTest(t, lt, c.cancelCh)
+					status, err := runLoadTest(t, lt)
 					if err != nil {
+						res.LoadTests[i] = LoadTestResult{Failed: true}
 						errsCh <- err
-						return
+						break
 					}
-					res.LoadTests[i] = LoadTestResult{loadTestID: ltID,
-						Label: buildCfg.Label, Config: lt, Status: status}
+					res.LoadTests[i] = LoadTestResult{
+						loadTestID: ltID,
+						Label:      buildCfg.Label,
+						Config:     lt,
+						Status:     status,
+					}
 				}
 
 				resultsCh <- res
@@ -128,14 +139,13 @@ func (c *Comparison) Run() (Output, error) {
 		close(errsCh)
 	}()
 
-	if err := <-errsCh; err != nil {
-		mlog.Error("an error has occurred, cancelling", mlog.Err(err))
-		close(c.cancelCh)
-		wg.Wait()
-		return output, err
+	for err := range errsCh {
+		if err != nil {
+			mlog.Error("an error has occurred", mlog.Err(err))
+		}
 	}
 
-	mlog.Info("load-tests have completed, going to generate some results")
+	mlog.Info("load-tests have completed, generating results")
 
 	output.DeploymentInfo = c.deploymentInfo
 	// do actual comparisons and generate some results

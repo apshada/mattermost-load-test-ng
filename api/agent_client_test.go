@@ -14,6 +14,7 @@ import (
 	client "github.com/mattermost/mattermost-load-test-ng/api/client/agent"
 	"github.com/mattermost/mattermost-load-test-ng/defaults"
 	"github.com/mattermost/mattermost-load-test-ng/loadtest"
+	"github.com/mattermost/mattermost-load-test-ng/loadtest/control"
 	"github.com/mattermost/mattermost-load-test-ng/loadtest/control/simulcontroller"
 	"github.com/mattermost/mattermost-load-test-ng/logger"
 
@@ -32,7 +33,7 @@ func createFakeMMServer() *httptest.Server {
 		case "/api/v4/config":
 			mmCfg := model.Config{}
 			mmCfg.SetDefaults()
-			mmCfg.TeamSettings.MaxUsersPerTeam = model.NewInt(10000)
+			mmCfg.TeamSettings.MaxUsersPerTeam = model.NewPointer(10000)
 			json.NewEncoder(w).Encode(mmCfg)
 		case "/api/v4/emoji":
 			json.NewEncoder(w).Encode(&model.Emoji{})
@@ -52,6 +53,7 @@ func createAgent(t *testing.T, id, serverURL string) *client.Agent {
 	var ucConfig simulcontroller.Config
 	defaults.Set(&ltConfig)
 	ltConfig.ConnectionConfiguration.ServerURL = mmServer.URL
+	ltConfig.UserControllerConfiguration.ServerVersion = control.MinSupportedVersion.String()
 	defaults.Set(&ucConfig)
 	agent, err := client.New(id, serverURL, nil)
 	require.NoError(t, err)
